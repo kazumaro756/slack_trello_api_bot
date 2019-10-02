@@ -200,15 +200,15 @@ def check_method_can_go_or_not(id):
         KeyConditionExpression=Key('eventid').eq(id)
     )
 
-    # hitした場合
+    # hitしなかった場合
     if response['ScannedCount'] == 0:
-        # dynamodbに書き込んで後続の処理をロック
+        # dynamodbに書き込んで後続の処理を継続（TRUEを返す）
         write_res = dynamotable.put_item(Item={'eventid': id})
         return True
 
-        # hitしなかった場合
+    # hitした場合
     else:
-        # 何もせずに処理をスルー
+        # すでに処理が走っているとみなし、何もせずに処理をスルー（Falseを返す）。
         return False
 
 
