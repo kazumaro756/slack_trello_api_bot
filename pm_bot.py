@@ -10,6 +10,11 @@ import requests
 from datetime import datetime, date, timedelta
 from io import StringIO
 
+# dynamodb用
+from boto3.dynamodb.conditions import Key, Attr
+import decimal
+from botocore.exceptions import ClientError
+
 # S3のクレデンシャル情報は環境設定で指定。
 S3_accesskey = os.environ['s3accesskey']
 S3_secretkey = os.environ['s3secretkey']
@@ -23,6 +28,19 @@ token = os.environ['Trello_token']
 # ログ設定
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+dynamodb = boto3.resource('dynamodb', region_name='ap-northeast-1')
+
+
+# Helper class to convert a DynamoDB item to JSON.
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, decimal.Decimal):
+            if o % 1 > 0:
+                return float(o)
+            else:
+                return int(o)
+        return super(DecimalEncoder, self).default(o)
 
 
 def handle_slack_event(slack_event: dict, context) -> str:
@@ -59,8 +77,8 @@ def handle_slack_event(slack_event: dict, context) -> str:
         post_message_to_slack_channel("つ元気　ですよ、提督。", slack_event.get("event").get("channel"))
 
     if is_message_oyasumi(slack_event):
-        # Slackにメッセージを投稿する
-        post_message_to_slack_channel("おやすみなさい提督！　今日もお疲れ様でした。", slack_event.get("event").get("channel"))
+        if check_method_can_go_or_not(get_event_time_stamp(slack_event)):
+            post_message_to_slack_channel("おやすみなさい提督！　今日もお疲れ様でした。", slack_event.get("event").get("channel"))
 
     if is_message_ohayo(slack_event):
         # Slackにメッセージを投稿する
@@ -125,16 +143,26 @@ def is_message_oyasumi(slack_event: dict) -> bool:
     return slack_event.get("event").get("text") == "おやすみ"
 
 
+def is_message_ts(slack_event: dict) -> bool:
+    return slack_event.get("event").get("text") == "ts"
+
+
 def is_message_ohayo(slack_event: dict) -> bool:
     return slack_event.get("event").get("text") == "おはよう"
 
 
 def is_message_inreview(slack_event: dict) -> bool:
     r = re.match(r'.*to list "InReview".*', slack_event.get("event").get("attachments")[0]["fallback"])
+    # ts = slack_event.get("event").get("ts")
     if r:
         return True
     else:
         return False
+
+
+# 当該スラックイベントの発生時を取得する。これを持ってスラックイベントのIDとして解釈する。
+def get_event_time_stamp(slack_event):
+    return slack_event.get("event").get("ts")
 
 
 def is_message_day(slack_event: dict) -> bool:
@@ -159,6 +187,29 @@ def get_csv_from_s3_as_pd_dataframe(s3_file_key):
     csv_string = body.read().decode('utf-8')
 
     return pd.read_csv(StringIO(csv_string))
+
+
+# 関数を走らせてよいかどうかのチェック
+def check_method_can_go_or_not(id):
+    # DynamoDBテーブルのオブジェクトを取得
+    table_name = "pmbot_controller"
+    dynamotable = dynamodb.Table(table_name)
+
+    # クエリを飛ばして、当該IDがすでにテーブル上に登録されているかどうかをチェックする。
+    response = dynamotable.query(
+        KeyConditionExpression=Key('eventid').eq(id)
+    )
+
+    # hitした場合
+    if response['ScannedCount'] == 0:
+        # dynamodbに書き込んで後続の処理をロック
+        write_res = dynamotable.put_item(Item={'eventid': id})
+        return True
+
+        # hitしなかった場合
+    else:
+        # 何もせずに処理をスルー
+        return False
 
 
 def post_message_to_slack_channel(message: str, channel: str):
